@@ -1,4 +1,5 @@
 const github = require('../src/github')
+const helpers = require('./test-helpers')
 
 test('get issue number from branch name', () => {
   expect(github.getIssueNumberFromBranchName('i12')).toBe(12)
@@ -43,7 +44,7 @@ test('get branch name from issue', async () => {
   expect(await github.getBranchNameFromIssue(ctx, config)).toBe(
     'issue-12-_Error_Mysqli_statement_execute_error_Cannot_add_or_update_a_child_row_a_foreign_key_constraint_fails' +
     '_omeka_omeka_super_eight_festivals_filmmaker_films_CONSTRAINT_omeka_super_eight_festivals_filmmaker_films_' +
-    'ibfk_1_FOREIGN_KEY_filmmaker_id_RE')
+    'ibfk_1_FOREIGN_KEY_filmmake')
 })
 
 test('get branch configuration for issue', () => {
@@ -125,24 +126,13 @@ test('get branch name from issue with only branch prefix configured', async () =
 })
 
 test('handle branch already exist, log message to info level', async () => {
-  const ctx = {
-    payload: {
-      repository: {
-        owner: {
-          login: 'robvanderleek'
-        }, //
-        name: 'create-issue-brancg'
-      } //
-    }, //
-    octokit: {
-      git: {
-        createRef: () => {
-          // eslint-disable-next-line no-throw-literal
-          throw { message: 'Reference already exists' }
-        }
-      }
-    }
+  const createRef = () => {
+    // eslint-disable-next-line no-throw-literal
+    throw { message: 'Reference already exists' }
   }
+
+  const ctx = helpers.getDefaultContext()
+  ctx.octokit.git.createRef = createRef
   const log = { info: jest.fn() }
 
   await github.createBranch(ctx, {}, 'issue-1', '1234abcd', log)
@@ -152,28 +142,13 @@ test('handle branch already exist, log message to info level', async () => {
 
 test('log branch create errors with error level', async () => {
   const createComment = jest.fn()
-  const ctx = {
-    payload: {
-      repository: {
-        owner: {
-          login: 'robvanderleek'
-        }, //
-        name: 'create-issue-brancg'
-      } //
-    }, //
-    octokit: {
-      git: {
-        createRef: () => {
-          // eslint-disable-next-line no-throw-literal
-          throw { message: 'Oops, something is wrong' }
-        }
-      }, //
-      issues: {
-        createComment: createComment
-      }
-    }, //
-    issue: () => {}
+  const createRef = () => {
+    // eslint-disable-next-line no-throw-literal
+    throw { message: 'Oops, something is wrong' }
   }
+  const ctx = helpers.getDefaultContext()
+  ctx.octokit.issues.createComment = createComment
+  ctx.octokit.git.createRef = createRef
 
   await github.createBranch(ctx, { silent: false }, 'robvanderleek', 'create-issue-branch', 'issue-1', '1234abcd',
     () => {})
@@ -181,38 +156,54 @@ test('log branch create errors with error level', async () => {
   expect(createComment).toBeCalled()
 })
 
-test('create PR', async () => {
+test('create (draft) PR', async () => {
   const createPR = jest.fn()
-  const ctx = {
-    payload: {
-      repository: {
-        owner: {
-          login: 'robvanderleek'
-        }, //
-        name: 'create-issue-branch'
-      }, //
-      issue: { number: 1, title: 'Hello world' }
-    }, //
-    octokit: {
-      pulls: {
-        create: createPR
-      }, //
-      git: {
-        getCommit: () => ({ data: { tree: { sha: '1234abcd' } } }),
-        createCommit: () => ({ data: { sha: 'abcd1234' } }),
-        updateRef: () => {}
-      }
-    }, //
-    issue: () => {}
+  let capturedCommitMessage = ''
+  const createCommit = ({ message }) => {
+    capturedCommitMessage = message
+    return ({ data: { sha: 'abcd1234' } })
   }
+  const ctx = helpers.getDefaultContext()
+  ctx.octokit.pulls.create = createPR
+  ctx.octokit.git.createCommit = createCommit
 
-  await github.createPR({ log: (msg) => { console.log(msg) } }, ctx, { silent: false }, 'robvanderleek', 'issue-1')
-
+  await github.createPR({ log: () => { } }, ctx, { silent: false }, 'robvanderleek', 'issue-1')
   expect(createPR).toHaveBeenCalledWith({
     owner: 'robvanderleek',
     repo: 'create-issue-branch',
     draft: false,
-    base: undefined,
+    base: 'master',
+    head: 'issue-1',
+    body: 'closes #1',
+    title: 'Hello world'
+  })
+  expect(capturedCommitMessage).toBe('Create PR for #1')
+  await github.createPR({ log: () => { } }, ctx, { silent: false, openDraftPR: true }, 'robvanderleek', 'issue-1')
+  expect(createPR).toHaveBeenCalledWith({
+    owner: 'robvanderleek',
+    repo: 'create-issue-branch',
+    draft: true,
+    base: 'master',
+    head: 'issue-1',
+    body: 'closes #1',
+    title: 'Hello world'
+  })
+  expect(capturedCommitMessage).toBe('Create draft PR for #1')
+})
+
+test('use correct source branch', async () => {
+  const createPR = jest.fn()
+  const ctx = helpers.getDefaultContext()
+  ctx.octokit.pulls.create = createPR
+  ctx.payload.issue.labels = [{ name: 'enhancement' }]
+  const config = { branches: [{ label: 'enhancement', name: 'develop' }] }
+
+  await github.createPR({ log: () => { } }, ctx, config, 'robvanderleek', 'issue-1')
+  expect(createPR).toHaveBeenCalledWith({
+    owner: 'robvanderleek',
+    repo: 'create-issue-branch',
+    draft: false,
+    base: 'develop',
     head: 'issue-1',
     body: 'closes #1',
     title: 'Hello world'

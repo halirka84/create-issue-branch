@@ -18,7 +18,7 @@ async function getBranchNameFromIssue (ctx, config) {
   const result = await getBranchName(ctx, config, title)
   // For magic number below see:
   // https://stackoverflow.com/questions/60045157/what-is-the-maximum-length-of-a-github-branch-name
-  const MAX_BYTES_GITHUB_BRANCH_NAME = 250
+  const MAX_BYTES_GITHUB_BRANCH_NAME = 243
   if (utils.getStringLengthInBytes(result) > MAX_BYTES_GITHUB_BRANCH_NAME) {
     return utils.trimStringToByteLength(result, MAX_BYTES_GITHUB_BRANCH_NAME)
   } else {
@@ -119,14 +119,20 @@ async function branchExists (ctx, branchName) {
   }
 }
 
-async function getSourceBranchHeadSha (ctx, config, log) {
+function getSourceBranch (ctx, config) {
   const branchConfig = getIssueBranchConfig(ctx, config)
-  let result
   if (branchConfig && branchConfig.name) {
-    result = await getBranchHeadSha(ctx, branchConfig.name)
-    if (result) {
-      log(`Source branch: ${branchConfig.name}`)
-    }
+    return branchConfig.name
+  } else {
+    return context.getDefaultBranch(ctx)
+  }
+}
+
+async function getSourceBranchHeadSha (ctx, config, log) {
+  const sourceBranch = getSourceBranch(ctx, config)
+  let result = await getBranchHeadSha(ctx, sourceBranch)
+  if (result) {
+    log(`Source branch: ${sourceBranch}`)
   }
   if (!result) {
     const defaultBranch = context.getDefaultBranch(ctx)
@@ -203,21 +209,23 @@ async function createBranch (ctx, config, branchName, sha, log) {
 async function createPR (app, ctx, config, username, branchName) {
   const owner = context.getRepoOwner(ctx)
   const repo = context.getRepoName(ctx)
-  const base = context.getDefaultBranch(ctx)
+  const base = getSourceBranch(ctx, config, app.log)
   const title = context.getIssueTitle(ctx)
   const issueNumber = context.getIssueNumber(ctx)
   const draft = Config.shouldOpenDraftPR(config)
+  const draftText = draft ? 'draft ' : ''
   try {
     const commitSha = await getBranchHeadSha(ctx, branchName)
     const treeSha = await getCommitTreeSha(ctx, commitSha)
-    const emptyCommitSha = await createCommit(ctx, commitSha, treeSha, username, 'Create draft PR')
+    const emptyCommitSha = await createCommit(ctx, commitSha, treeSha, username,
+      `Create ${draftText}PR for #${issueNumber}`)
     await updateReference(ctx, branchName, emptyCommitSha)
     await ctx.octokit.pulls.create(
       { owner, repo, head: branchName, base, title, body: `closes #${issueNumber}`, draft: draft })
     app.log(`Pull request created for branch ${branchName}`)
   } catch (e) {
     app.log(`Could not create draft PR (${e.message})`)
-    await addComment(ctx, config, `Could not create draft PR (${e.message})`)
+    await addComment(ctx, config, `Could not create ${draftText}PR (${e.message})`)
   }
 }
 
